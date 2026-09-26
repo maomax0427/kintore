@@ -528,6 +528,7 @@
         closeSheet();
         startWorkout({ title: r.title || defaultTitle(), exercises: toWorkoutExercises(r.exercises) });
       } else if (kind === 'append') {
+        if (r.title && !S.active.exercises.length) S.active.title = r.title;
         S.active.exercises.push(...toWorkoutExercises(r.exercises));
         save(); closeSheet(); renderWorkout(true);
         toast(r.exercises.length + '種目を追加しました');
