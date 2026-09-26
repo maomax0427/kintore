@@ -136,28 +136,63 @@
   }
 
   // ---------- テキスト ⇄ メニュー ----------
-  function parse(text) {
-    const r = P.parseMenu(text, { customExercises: S.custom, defaultSets: S.settings.defaultSets });
+  function fixRest(r) {
     if (S.settings.restDefault !== 'auto') r.exercises.forEach(e => { if (e.restAuto) { e.rest = +S.settings.restDefault; e.restAuto = false; } });
     return r;
   }
+  function parse(text) {
+    return fixRest(P.parseMenu(text, { customExercises: S.custom, defaultSets: S.settings.defaultSets }));
+  }
+  function parseAll(text) {
+    return P.parseProgram(text, { customExercises: S.custom, defaultSets: S.settings.defaultSets }).map(fixRest);
+  }
+  // 複数のメニューを、それぞれテンプレートとして保存
+  function saveProgram(list, fromSheet) {
+    if (!confirm(list.length + 'つのテンプレートとして保存しますか？\n' + list.map(r => '・' + (r.title || '無題')).join('\n'))) return;
+    list.forEach(r => r.exercises.forEach(e => { if (!e.exId) registerCustom(e); }));
+    const added = list.map(r => ({ id: uid(), title: r.title || '無題のテンプレート', exercises: stripForTemplate(r.exercises), text: r.text || '' }));
+    S.templates = added.concat(S.templates);
+    if (fromSheet) { try { localStorage.removeItem(DRAFT); } catch (e) { /* noop */ } }
+    save(); closeSheet(); ui.tab = 'workout'; render(); toast(added.length + 'つのテンプレートを追加しました');
+  }
+  function openPrograms() {
+    const progs = window.KINTORE_PROGRAMS || [];
+    const body = progs.map((p, i) => {
+      const list = parseAll(p.text);
+      return `<div class="card pv" style="margin-bottom:10px">
+        <div class="pv-h"><b>${esc(p.title)}</b><span class="tag">${list.length}日分</span></div>
+        <div class="small muted" style="margin:4px 0 8px">${esc(p.description || '')}</div>
+        <div class="small">${list.map(r => '・' + esc(r.title) + '（' + r.exercises.length + '種目）').join('<br>')}</div>
+        <button class="btn primary block sm" style="margin-top:10px" data-prog="${i}">テンプレートに追加</button>
+      </div>`;
+    }).join('') + `<div class="small muted" style="padding:4px">自分のプログラムは「メニューを書く」に貼り付けて「テンプレに保存」すると、見出し（Week1 Day1、【胸の日】など）ごとに分けて保存されます。</div>`;
+    openSheet('プログラムを追加', body, [{ label: '閉じる', cls: 'gray', fn: closeSheet }]);
+    $('#sheet .sh-b').addEventListener('click', ev => {
+      const b = ev.target.closest('[data-prog]'); if (!b) return;
+      saveProgram(parseAll(progs[+b.dataset.prog].text));
+    });
+  }
   function toWorkoutExercises(list) {
     return list.map(e => ({
-      id: uid(), name: e.name, part: e.part, timed: !!e.timed, rest: e.rest,
+      id: uid(), name: e.name, part: e.part, timed: !!e.timed, rest: e.rest, note: e.note || '', section: e.section || '',
       sets: e.sets.map(s => ({ id: uid(), kg: s.kg, reps: s.reps, sec: s.sec, warmup: !!s.warmup, done: false })),
     }));
   }
   function menuToText(title, exercises) {
     const lines = [];
     if (title) lines.push('【' + title + '】');
+    let sec = '';
     exercises.forEach(e => {
+      if ((e.section || '') !== sec) { sec = e.section || ''; if (sec) lines.push('', sec); }
+      const bullet = sec ? '・' : '';
+      const nm = bullet + e.name + (e.note ? '（' + e.note + '）' : '');
       const one = s => (s.warmup ? 'アップ ' : '') + (s.kg ? fmtKg(s.kg) + 'kg ' : (s.kg === 0 ? '自重 ' : '')) + (s.sec ? s.sec + '秒' : s.reps != null ? s.reps + '回' : '');
-      const restTxt = ' レスト' + (e.rest ? restLabel(e.rest) : '0秒');
+      const restTxt = ' レスト' + (e.rest || 0) + '秒';
       const sets = e.sets;
       const same = sets.length && sets.every(s => one(s) === one(sets[0]) && !s.warmup);
-      if (same && one(sets[0]).trim()) lines.push(e.name + ' ' + one(sets[0]).trim() + ' ' + sets.length + 'セット' + restTxt);
+      if (same && one(sets[0]).trim()) lines.push(nm + ' ' + one(sets[0]).trim() + ' ' + sets.length + 'セット' + restTxt);
       else {
-        lines.push(e.name + restTxt);
+        lines.push(nm + restTxt);
         sets.forEach(s => { const t = one(s).trim(); lines.push(t || '10回'); });
       }
     });
@@ -195,7 +230,8 @@
     const tpls = S.templates.map(t => `
       <button class="card tpl" data-tpl="${t.id}">
         <b>${esc(t.title)}</b>
-        <span class="l">${esc(t.exercises.map(e => e.sets.length + '×' + e.name).join('、'))}</span>
+        <span class="l">${esc(t.exercises.map(e => e.name).join('、'))}</span>
+        <span class="small muted">${t.exercises.length}種目 · ${t.exercises.reduce((a, e) => a + e.sets.length, 0)}セット</span>
       </button>`).join('');
     return `
       <div class="page-h"><h1>ワークアウト</h1></div>
@@ -207,7 +243,7 @@
         <button class="btn primary block" data-act="text-new">メニューを書く</button>
       </div>
       <button class="btn soft block" data-act="empty" style="margin-top:10px">空のワークアウトを始める</button>
-      <div class="sec-h">テンプレート</div>
+      <div class="sec-h" style="display:flex;justify-content:space-between;align-items:center">テンプレート<button class="link small" data-act="programs">＋ プログラムを追加</button></div>
       ${tpls ? `<div class="tpl-grid">${tpls}</div>` : `<div class="card empty">まだありません。<br>メニューを書いて「テンプレートに保存」すると、ここから1タップで始められます。</div>`}
     `;
   }
@@ -223,6 +259,7 @@
     else if (act === 'empty') startWorkout({ title: defaultTitle(), exercises: [] });
     else if (act === 'resume') { ui.woOpen = true; render(); }
     else if (act === 'new-ex') openNewExercise();
+    else if (act === 'programs') openPrograms();
     else if (act === 'export') exportData();
     else if (act === 'import') $('#importFile').click();
     else if (act === 'wipe') wipeData();
@@ -277,7 +314,7 @@
       ${(w.prs || []).length ? `<div class="card det-ex">${w.prs.map(p => `<div class="pr">🏆 ${esc(p)}</div>`).join('')}</div>` : ''}
       ${w.exercises.map(e => {
         let n = 0;
-        return `<div class="card det-ex"><b>${esc(e.name)}</b>${e.sets.map(s => `
+        return `<div class="card det-ex"><b>${esc(e.name)}</b>${e.note ? `<div class="ex-note" style="padding:0">${esc(e.note)}</div>` : ''}${e.sets.map(s => `
           <div class="det-set"><span class="n">${s.warmup ? 'W' : ++n}</span><span class="num">${esc(setText(s, e.timed))}</span><span class="e num">${e1rm(s.kg, s.reps) ? '1RM ' + Math.round(e1rm(s.kg, s.reps)) : ''}</span></div>`).join('')}</div>`;
       }).join('')}`;
     openSheet(esc(w.title), body, [
@@ -511,8 +548,10 @@
     const ta = $('#menuText');
     let t = null;
     const update = () => {
-      const r = parse(ta.value);
-      $('#preview').innerHTML = previewHtml(r);
+      const list = mode === 'new' ? parseAll(ta.value) : [parse(ta.value)];
+      $('#preview').innerHTML = list.length > 1
+        ? `<div class="card pv" style="margin-top:14px">見出しごとに <b>${list.length}つのメニュー</b> に分けました。「テンプレに保存」でまとめて保存できます。</div>` + list.map(previewHtml).join('')
+        : previewHtml(list[0] || parse(''));
       if (mode === 'new') { try { localStorage.setItem(DRAFT, ta.value); } catch (e) { /* noop */ } }
     };
     ta.addEventListener('input', () => { clearTimeout(t); t = setTimeout(update, 120); });
@@ -520,6 +559,7 @@
     if (!draft) setTimeout(() => ta.focus(), 250);
 
     function submit(kind) {
+      if (kind === 'template' && parseAll(ta.value).length > 1) return saveProgram(parseAll(ta.value), true);
       const r = parse(ta.value);
       if (!r.exercises.length) return toast('種目が見つかりません。1行に1種目で書いてください');
       r.exercises.forEach(e => { if (!e.exId) registerCustom(e); });
@@ -545,12 +585,14 @@
     const totalSets = r.exercises.reduce((a, e) => a + e.sets.length, 0);
     return `
       <div class="sec-h" style="margin-top:16px">${r.title ? esc(r.title) + ' · ' : ''}${r.exercises.length}種目 · ${totalSets}セット</div>
-      ${r.exercises.map(e => {
+      ${r.exercises.map((e, i) => {
+        const secHead = e.section && (i === 0 || r.exercises[i - 1].section !== e.section) ? `<div class="sec-label">${esc(e.section)}</div>` : '';
         const same = e.sets.every(s => setText(s, e.timed) === setText(e.sets[0], e.timed) && s.warmup === e.sets[0].warmup);
         const setsTxt = same ? `${e.sets.length}セット · ${setText(e.sets[0], e.timed)}`
           : e.sets.map(s => (s.warmup ? 'W ' : '') + setText(s, e.timed)).join(' / ');
-        return `<div class="card pv">
+        return `${secHead}<div class="card pv">
           <div class="pv-h"><b>${esc(e.name)}</b>${e.exId ? `<span class="tag">${esc(e.part)}</span>` : `<span class="tag new">新しい種目</span>`}</div>
+          ${e.note ? `<div class="ex-note" style="padding:2px 0 0">${esc(e.note)}</div>` : ''}
           <div class="pv-sets num">${esc(setsTxt)}</div>
           <div class="pv-rest">⏱ レスト ${restLabel(e.rest)}${e.restAuto ? '（自動）' : ''}</div>
         </div>`;
@@ -558,7 +600,7 @@
       ${r.warnings.length ? `<div class="warn">${r.warnings.map(esc).join('<br>')}</div>` : ''}`;
   }
   function stripForTemplate(exs) {
-    return exs.map(e => ({ name: e.name, part: e.part, timed: !!e.timed, rest: e.rest, sets: e.sets.map(s => ({ kg: s.kg, reps: s.reps, sec: s.sec, warmup: !!s.warmup })) }));
+    return exs.map(e => ({ name: e.name, part: e.part, timed: !!e.timed, rest: e.rest, note: e.note || '', section: e.section || '', sets: e.sets.map(s => ({ kg: s.kg, reps: s.reps, sec: s.sec, warmup: !!s.warmup })) }));
   }
   function saveTemplate(title, exercises, text) {
     const name = prompt('テンプレートの名前', title || exercises.slice(0, 2).map(e => e.name).join('・'));
@@ -602,7 +644,7 @@
       <div class="wo-body"><div class="wo-inner">
         <input class="wo-title" id="woTitle" value="${esc(w.title)}" aria-label="タイトル">
         <div class="wo-meta">${dateLabel(w.start, true)} 開始</div>
-        ${w.exercises.map((e, ei) => exCard(e, ei)).join('')}
+        ${w.exercises.map((e, ei) => (e.section && (ei === 0 || w.exercises[ei - 1].section !== e.section) ? `<div class="sec-label">${esc(e.section)}</div>` : '') + exCard(e, ei)).join('')}
         ${!w.exercises.length ? '<div class="card empty">種目を追加してください</div>' : ''}
         <div class="wo-actions">
           <button class="btn soft block" data-w="add-text">＋ テキストで種目を追加</button>
@@ -622,6 +664,7 @@
           <button class="rest-chip ${e.rest ? '' : 'off'}" data-w="rest">${ICONS.timer}${restLabel(e.rest)}</button>
           <button class="dots" data-w="exmenu" aria-label="メニュー">···</button>
         </div>
+        ${e.note ? `<div class="ex-note">${esc(e.note)}</div>` : ''}
         <div class="grid head"><span>セット</span><span>前回</span><span>kg</span><span>${repLabel}</span><span>✓</span></div>
         ${e.sets.map((s, si) => {
           const p = prevFor(e, si);
@@ -771,7 +814,7 @@
     const rec = {
       id: w.id, title: (w.title || '').trim() || defaultTitle(), start: w.start, end: Date.now(),
       exercises: w.exercises.map(e => ({
-        name: e.name, part: e.part, timed: !!e.timed, rest: e.rest,
+        name: e.name, part: e.part, timed: !!e.timed, rest: e.rest, note: e.note || '', section: e.section || '',
         sets: e.sets.filter(s => s.done).map(s => ({ kg: s.kg, reps: s.reps, sec: s.sec, warmup: !!s.warmup })),
       })).filter(e => e.sets.length),
     };
