@@ -15,17 +15,22 @@
     workouts: [], templates: [], custom: [],
     settings: { restDefault: 'auto', defaultSets: 3, sound: true, vibrate: true },
     active: null, rest: null,
+    sync: { up: [], del: [], cfgHash: '', last: 0 },
   });
   function load() {
     try {
       const d = JSON.parse(localStorage.getItem(STORE));
-      if (d) { const s = Object.assign(defaults(), d); s.settings = Object.assign(defaults().settings, d.settings); return s; }
+      if (d) { const s = Object.assign(defaults(), d); s.settings = Object.assign(defaults().settings, d.settings); s.sync = Object.assign(defaults().sync, d.sync); return s; }
     } catch (e) { /* 読めなければ初期状態 */ }
     return defaults();
   }
   let S = load();
   let saveT = null;
-  function saveNow() { clearTimeout(saveT); try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { toast('保存に失敗しました'); } }
+  function saveNow() {
+    clearTimeout(saveT);
+    try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { toast('保存に失敗しました'); }
+    if (apiUrl() && cfgString() !== S.sync.cfgHash) scheduleFlush();
+  }
   function save() { clearTimeout(saveT); saveT = setTimeout(saveNow, 200); }
   window.addEventListener('pagehide', saveNow);
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); else { tickRest(); keepAwake(); } });
@@ -216,7 +221,7 @@
     const main = $('#main');
     main.innerHTML = ui.tab === 'history' ? pageHistory() : ui.tab === 'exercises' ? pageExercises() : ui.tab === 'settings' ? pageSettings() : pageHome();
     renderMini();
-    renderWorkout();
+    renderWorkout(true);
     tickRest();
   }
   $('#tabbar').addEventListener('click', e => {
@@ -263,6 +268,10 @@
     else if (act === 'export') exportData();
     else if (act === 'import') $('#importFile').click();
     else if (act === 'wipe') wipeData();
+    else if (act === 'sync-connect') connectSheet();
+    else if (act === 'sync-now') fullSync(true);
+    else if (act === 'sync-off') { if (confirm('スプレッドシートとの連携を解除しますか？（シートの記録は残ります）')) { setApiUrl(''); render(); } }
+    else if (act === 'sync-help') syncHelp();
   });
 
   function templateMenu(id) {
@@ -318,7 +327,7 @@
           <div class="det-set"><span class="n">${s.warmup ? 'W' : ++n}</span><span class="num">${esc(setText(s, e.timed))}</span><span class="e num">${e1rm(s.kg, s.reps) ? '1RM ' + Math.round(e1rm(s.kg, s.reps)) : ''}</span></div>`).join('')}</div>`;
       }).join('')}`;
     openSheet(esc(w.title), body, [
-      { label: '削除', cls: 'danger', fn: () => { if (confirm('この記録を削除しますか？')) { S.workouts = S.workouts.filter(x => x.id !== id); save(); closeSheet(); render(); } } },
+      { label: '削除', cls: 'danger', fn: () => { if (confirm('この記録を削除しますか？')) { S.workouts = S.workouts.filter(x => x.id !== id); queueDelete(id); save(); closeSheet(); render(); } } },
       { label: 'テンプレに保存', cls: 'soft', fn: () => saveTemplate(w.title, w.exercises) },
       { label: 'もう一度', cls: 'primary', fn: () => { closeSheet(); startWorkout({ title: w.title, exercises: toWorkoutExercises(w.exercises) }); } },
     ]);
@@ -471,6 +480,8 @@
 70kg 6回</code>
         先頭に「レスト90秒」と書くと全種目に使われます。「【胸の日】」のような行はタイトルになります。
       </div>
+      <div class="sec-h">Googleスプレッドシート連携</div>
+      ${syncCard()}
       <div class="sec-h">データ</div>
       <div class="card">
         <button class="set-row link" style="width:100%" data-act="export">バックアップを書き出す<span class="muted small">${S.workouts.length}件</span></button>
@@ -508,14 +519,16 @@
         if (!Array.isArray(d.workouts)) throw new Error('形式が違います');
         if (!confirm(`${d.workouts.length}件の記録を読み込みます。今のデータは置き換わります。よろしいですか？`)) return;
         S = Object.assign(defaults(), d); S.settings = Object.assign(defaults().settings, d.settings); S.rest = null;
-        saveNow(); render(); toast('読み込みました');
+        S.sync = Object.assign(defaults().sync, { up: S.workouts.map(w => w.id) });
+        saveNow(); render(); toast('読み込みました'); flush();
       } catch (e) { toast('読み込めませんでした: ' + e.message); }
     };
     r.readAsText(file);
   }
   function wipeData() {
-    if (!confirm('記録・テンプレート・設定をすべて削除します。元に戻せません。よろしいですか？')) return;
-    S = defaults(); saveNow(); render(); toast('削除しました');
+    if (!confirm('記録・テンプレート・設定をすべて削除します。' + (apiUrl() ? 'スプレッドシートの記録も削除されます。' : '') + '元に戻せません。よろしいですか？')) return;
+    const del = S.workouts.map(w => w.id);
+    S = defaults(); S.sync.del = del; saveNow(); render(); toast('削除しました'); flush();
   }
 
   // ---------- テキスト入力シート ----------
@@ -834,6 +847,7 @@
     });
     rec.exercises.forEach(e => { if (!P.findExercise(e.name, S.custom)) registerCustom(Object.assign({}, e, exMeta(e.name))); });
     S.workouts.unshift(rec);
+    queueUpsert(rec.id);
     S.workouts.sort((a, b) => b.start - a.start);
     S.active = null; S.rest = null;
     saveNow(); ui.tab = 'history'; render(); keepAwake();
@@ -932,9 +946,146 @@
     };
   }
 
+  // ---------- スプレッドシート連携 ----------
+  // ワークアウトを完了すると、Apps Script のウェブアプリ経由でシートに保存する。
+  // 電波がないときは S.sync に溜めておき、次に開いたときに送る。
+  const API_KEY = 'kintore:api';
+  function apiUrl() { try { return localStorage.getItem(API_KEY) || ''; } catch (e) { return ''; } }
+  function setApiUrl(u) { try { if (u) localStorage.setItem(API_KEY, u); else localStorage.removeItem(API_KEY); } catch (e) { /* noop */ } }
+  const cfgString = () => JSON.stringify({ templates: S.templates, custom: S.custom, settings: S.settings });
+  let syncState = { busy: false, error: '' };
+
+  async function api(action, payload) {
+    const res = await fetch(apiUrl(), {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ action }, payload || {})),
+    });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || '保存に失敗しました');
+    return j;
+  }
+  function queueUpsert(id) { S.sync.del = S.sync.del.filter(x => x !== id); if (!S.sync.up.includes(id)) S.sync.up.push(id); flush(); }
+  function queueDelete(id) { S.sync.up = S.sync.up.filter(x => x !== id); if (!S.sync.del.includes(id)) S.sync.del.push(id); flush(); }
+  let flushT = null;
+  function scheduleFlush() { clearTimeout(flushT); flushT = setTimeout(flush, 1500); }
+
+  async function flush() {
+    if (!apiUrl() || syncState.busy || !navigator.onLine) return;
+    const cfg = cfgString();
+    if (!S.sync.up.length && !S.sync.del.length && cfg === S.sync.cfgHash) return;
+    syncState.busy = true; refreshSyncCard();
+    try {
+      if (S.sync.del.length) { const ids = S.sync.del.slice(); await api('delete', { ids }); S.sync.del = S.sync.del.filter(x => !ids.includes(x)); }
+      if (S.sync.up.length) {
+        const ids = S.sync.up.slice();
+        const workouts = S.workouts.filter(w => ids.includes(w.id));
+        if (workouts.length) await api('upsert', { workouts });
+        S.sync.up = S.sync.up.filter(x => !ids.includes(x));
+      }
+      if (cfg !== S.sync.cfgHash) { await api('saveConfig', { config: JSON.parse(cfg) }); S.sync.cfgHash = cfg; }
+      S.sync.last = Date.now(); syncState.error = '';
+    } catch (e) {
+      syncState.error = e.message || String(e);
+    } finally {
+      syncState.busy = false;
+      try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (e) { /* noop */ }
+      refreshSyncCard();
+    }
+  }
+
+  // シートとアプリの記録を突き合わせる（新しい端末ではシートから復元される）
+  async function fullSync(verbose) {
+    if (!apiUrl() || syncState.busy) return;
+    syncState.busy = true; refreshSyncCard();
+    try {
+      const j = await api('load');
+      const local = new Set(S.workouts.map(w => w.id));
+      const remote = new Set((j.workouts || []).map(w => w.id));
+      let got = 0, addedTpl = 0;
+      (j.workouts || []).forEach(w => { if (!local.has(w.id) && !S.sync.del.includes(w.id)) { S.workouts.push(w); got++; } });
+      S.workouts.sort((a, b) => b.start - a.start);
+      S.workouts.forEach(w => { if (!remote.has(w.id) && !S.sync.up.includes(w.id)) S.sync.up.push(w.id); });
+      const sent = S.sync.up.length;
+      if (j.config) {
+        const c = j.config;
+        const tIds = new Set(S.templates.map(t => t.id));
+        (c.templates || []).forEach(t => { if (!tIds.has(t.id)) { S.templates.push(t); addedTpl++; } });
+        const names = new Set(S.custom.map(x => x.name));
+        (c.custom || []).forEach(x => { if (!names.has(x.name)) S.custom.push(x); });
+      }
+      S.sync.cfgHash = j.config ? JSON.stringify({ templates: j.config.templates, custom: j.config.custom, settings: j.config.settings }) : '';
+      syncState.busy = false; syncState.error = '';
+      saveNow();
+      if (got || addedTpl || ui.tab === 'settings') render();
+      await flush();
+      if (verbose) toast(`同期しました（受信 ${got}件・送信 ${sent}件）`);
+    } catch (e) {
+      syncState.busy = false; syncState.error = e.message || String(e);
+      refreshSyncCard();
+      if (verbose) toast('同期できませんでした: ' + syncState.error);
+    }
+  }
+
+  function syncCard() {
+    const url = apiUrl();
+    if (!url) return `
+      <div class="card" style="padding:14px 16px">
+        <div class="small" style="margin-bottom:10px">記録をGoogleスプレッドシートに自動で保存します。Claudeに頼めば、伸びの分析やグラフ作りができます。</div>
+        <input class="search" id="syncUrl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec">
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn gray sm" data-act="sync-help" style="flex:1">設定方法</button>
+          <button class="btn primary sm" data-act="sync-connect" style="flex:1">接続する</button>
+        </div>
+      </div>`;
+    const pend = S.sync.up.length + S.sync.del.length;
+    const last = S.sync.last ? dateLabel(S.sync.last, true) : 'まだ';
+    const status = syncState.busy ? '同期中…' : syncState.error ? '⚠️ ' + syncState.error : pend ? `未送信 ${pend}件（電波が戻ったら送ります）` : '✓ 最新です';
+    return `
+      <div class="card" id="syncCard">
+        <div class="set-row"><span>状態</span><span class="small ${syncState.error ? '' : 'muted'}" style="text-align:right">${esc(status)}</span></div>
+        <div class="set-row"><span>最終同期</span><span class="small muted">${esc(last)}</span></div>
+        <button class="set-row link" style="width:100%" data-act="sync-now">今すぐ同期</button>
+        <button class="set-row" style="width:100%;color:var(--red)" data-act="sync-off">連携を解除</button>
+      </div>`;
+  }
+  function refreshSyncCard() {
+    const c = $('#syncCard');
+    if (c && ui.tab === 'settings') c.outerHTML = syncCard();
+  }
+  async function connectSheet() {
+    const url = ($('#syncUrl').value || '').trim();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(url)) return toast('「https://script.google.com/macros/s/…/exec」の形のURLを貼ってください');
+    setApiUrl(url);
+    toast('接続しています…');
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'load' }) });
+      const j = await res.json();
+      if (!j.ok || j.app !== 'kintore') throw new Error('キントレ用のスクリプトではないようです');
+    } catch (e) {
+      setApiUrl(''); render();
+      return toast('接続できませんでした: ' + (e.message || e));
+    }
+    S.sync.cfgHash = '';
+    render();
+    fullSync(true);
+  }
+  function syncHelp() {
+    openSheet('スプレッドシート連携の設定', `<div class="guide card" style="line-height:1.8">
+      パソコンで行うのがおすすめです。<br>
+      1. Googleスプレッドシートを新しく作り、名前を「キントレデータ」にする<br>
+      2. 拡張機能 → Apps Script を開き、中身を全部消して <a class="link" href="https://github.com/maomax0427/kintore/blob/main/apps-script/Code.gs" target="_blank" rel="noopener">Code.gs</a> を貼り付けて保存<br>
+      3. 上の関数選択で「setup」を選んで ▶ 実行 → 権限を許可<br>
+      4. デプロイ → 新しいデプロイ → 種類「ウェブアプリ」、実行ユーザー「自分」、アクセス「全員」でデプロイ<br>
+      5. 表示されたウェブアプリのURLを、ここに貼って「接続する」<br>
+      <span class="muted small">URLは合言葉のようなものなので、人に教えないでください。</span>
+    </div>`, [{ label: '閉じる', cls: 'gray', fn: closeSheet }]);
+  }
+  window.addEventListener('online', flush);
+
   // ---------- 起動 ----------
   if (S.active) ui.woOpen = true;
   render();
   keepAwake();
+  if (apiUrl()) fullSync(false);
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
