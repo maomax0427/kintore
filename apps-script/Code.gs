@@ -11,6 +11,9 @@
  *   workouts … 1回のワークアウトにつき1行（最後の data 列はアプリ復元用の JSON）
  *   sets     … 1セットにつき1行（グラフや分析用）
  *   config   … テンプレート・自作種目・設定（A2 に JSON）
+ *
+ * レスト終了の通知: アプリが暗号化済みの通知を渡してくるので、時間になったらそのまま送るだけ。
+ * （更新したら setup をもう一度実行して「外部サービスへの接続」を許可し、デプロイを新しいバージョンにする）
  */
 const WO_SHEET = 'workouts';
 const SET_SHEET = 'sets';
@@ -112,16 +115,57 @@ function load_() {
   }
   let config = null;
   try { const raw = cfgSheet_().getRange('A2').getValue(); config = raw ? JSON.parse(raw) : null; } catch (e) { config = null; }
-  return { ok: true, app: 'kintore', workouts, config };
+  return { ok: true, app: 'kintore', version: 2, workouts, config };
 }
 
-function doGet() { return json_({ ok: true, app: 'kintore' }); }
+function doGet() { return json_({ ok: true, app: 'kintore', version: 2 }); }
+
+// ---------- レスト終了の通知 ----------
+// 最新のレストだけを覚えておき、スキップや ±15秒 の変更に合わせて待ち時間を変える
+const REST_KEY = 'rest';
+const cache_ = () => CacheService.getScriptCache();
+
+function restWait_(req) {
+  const t0 = Date.now();
+  cache_().put(REST_KEY, JSON.stringify({ token: req.token, endAt: t0 + Number(req.ms || 0) }), 900);
+  for (;;) {
+    const c = JSON.parse(cache_().get(REST_KEY) || 'null');
+    if (!c || c.token !== req.token) return { ok: true, sent: false };
+    const left = c.endAt - Date.now();
+    if (left <= 0) break;
+    if (Date.now() - t0 > 330000) return { ok: false, error: 'レストが長すぎます（5分半まで）' };
+    Utilities.sleep(Math.min(left, 1000));
+  }
+  cache_().remove(REST_KEY);
+  const res = UrlFetchApp.fetch(req.endpoint, {
+    method: 'post', headers: req.headers, payload: Utilities.base64Decode(req.body),
+    contentType: 'application/octet-stream', muteHttpExceptions: true,
+  });
+  const code = res.getResponseCode();
+  return { ok: code < 300, sent: true, status: code, error: code < 300 ? '' : res.getContentText().slice(0, 200) };
+}
+
+function restChange_(req) {
+  const c = JSON.parse(cache_().get(REST_KEY) || 'null');
+  if (!c || c.token !== req.token) return { ok: true };
+  if (req.action === 'restCancel') cache_().remove(REST_KEY);
+  else cache_().put(REST_KEY, JSON.stringify({ token: c.token, endAt: Date.now() + Number(req.ms || 0) }), 900);
+  return { ok: true };
+}
 
 function doPost(e) {
+  let req;
+  try { req = JSON.parse(e.postData.contents || '{}'); } catch (err) { return json_({ ok: false, error: 'bad request' }); }
+  // 通知は待ち時間が長いので、記録用のロックは取らない
+  try {
+    if (req.action === 'rest') return json_(restWait_(req));
+    if (req.action === 'restUpdate' || req.action === 'restCancel') return json_(restChange_(req));
+  } catch (err) {
+    return json_({ ok: false, error: String(err) });
+  }
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const req = JSON.parse(e.postData.contents || '{}');
     switch (req.action) {
       case 'load': return json_(load_());
       case 'upsert': upsert_(req.workouts || []); break;
@@ -143,6 +187,7 @@ function doPost(e) {
 /** 最初に一度だけ実行（シートの準備と、権限の承認のため） */
 function setup() {
   ss_().setSpreadsheetTimeZone('Asia/Tokyo');
+  UrlFetchApp.getRequest('https://web.push.apple.com/'); // 通知を送るための権限（外部サービスへの接続）を承認してもらう
   woSheet_();
   setSheet_();
   cfgSheet_();

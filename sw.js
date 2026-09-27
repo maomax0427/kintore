@@ -1,6 +1,6 @@
 // アプリ本体をキャッシュして、ジムで電波が弱くても起動できるようにする。
-const CACHE = 'kintore-v3';
-const SHELL = ['./', 'index.html', 'style.css', 'parser.js', 'presets.js', 'app.js', 'manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CACHE = 'kintore-v4';
+const SHELL = ['./', 'index.html', 'style.css', 'parser.js', 'presets.js', 'push.js', 'app.js', 'manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -19,4 +19,17 @@ self.addEventListener('fetch', e => {
       return res;
     }).catch(() => caches.match(e.request).then(r => r || caches.match('index.html')))
   );
+});
+
+// レスト終了の通知
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) { d = {}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'レスト終了', {
+    body: d.body || '', tag: d.tag || 'rest', renotify: true, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png',
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => cs.length ? cs[0].focus() : self.clients.openWindow('./')));
 });

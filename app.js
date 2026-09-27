@@ -81,6 +81,8 @@
     } catch (e) { /* 音が出せない環境 */ }
   }
   document.addEventListener('pointerdown', unlockAudio, { passive: true });
+  // 音楽やYouTubeを止めずに、重ねて鳴らす（iOS 17以降）
+  try { if (navigator.audioSession) navigator.audioSession.type = 'ambient'; } catch (e) { /* 非対応 */ }
   function beep() {
     if (S.settings.vibrate && navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 300]);
     if (!S.settings.sound || !actx) return;
@@ -272,6 +274,7 @@
     else if (act === 'sync-now') fullSync(true);
     else if (act === 'sync-off') { if (confirm('スプレッドシートとの連携を解除しますか？（シートの記録は残ります）')) { setApiUrl(''); render(); } }
     else if (act === 'sync-help') syncHelp();
+    else if (act === 'push-test') pushTest();
   });
 
   function templateMenu(id) {
@@ -454,7 +457,9 @@
       <div class="card">
         <div class="set-row"><span>レストの決め方<br><span class="small muted">メニューにレストがないとき</span></span>${sel('stRest', [['auto', '自動'], [60, '1分'], [90, '1分30秒'], [120, '2分'], [150, '2分30秒'], [180, '3分']], s.restDefault)}</div>
         <div class="set-row"><span>種目名だけのときのセット数</span>${sel('stSets', [[1, '1'], [2, '2'], [3, '3'], [4, '4'], [5, '5']], s.defaultSets)}</div>
-        <div class="set-row"><span>レスト終了の音</span>${sw('stSound', s.sound)}</div>
+        <div class="set-row"><span>レスト終了の音<br><span class="small muted">アプリ表示中。音楽は止めません</span></span>${sw('stSound', s.sound)}</div>
+        <div class="set-row"><span>レスト終了の通知<br><span class="small muted">ロック中・YouTubeや音楽アプリ使用中も届きます</span></span>${sw('stPush', pushOn())}</div>
+        ${pushOn() ? '<button class="set-row link" style="width:100%" data-act="push-test">テスト通知を送る（10秒後）</button>' : ''}
         <div class="set-row"><span>バイブ（Android）</span>${sw('stVib', s.vibrate)}</div>
       </div>
       <div class="sec-h">自動レストの目安</div>
@@ -497,6 +502,11 @@
     else if (t.id === 'stSets') s.defaultSets = +t.value;
     else if (t.id === 'stSound') { s.sound = t.checked; if (t.checked) { unlockAudio(); beep(); } }
     else if (t.id === 'stVib') s.vibrate = t.checked;
+    else if (t.id === 'stPush') {
+      if (t.checked) enablePush().then(ok => { if (!ok) t.checked = false; else { toast('通知をオンにしました'); render(); } });
+      else disablePush().then(render);
+      return;
+    }
     else if (t.id === 'importFile') return importData(t.files[0]);
     else return;
     save();
@@ -724,7 +734,7 @@
     if (act === 'min') { ui.woOpen = false; render(); }
     else if (act === 'finish') finishWorkout();
     else if (act === 'cancel') {
-      if (confirm('このワークアウトを中止しますか？記録は残りません。')) { S.active = null; S.rest = null; save(); render(); keepAwake(); }
+      if (confirm('このワークアウトを中止しますか？記録は残りません。')) { S.active = null; S.rest = null; pushRestChange(true); save(); render(); keepAwake(); }
     }
     else if (act === 'add-text') openTextSheet('append');
     else if (act === 'add-ex') pickExercise(name => {
@@ -790,7 +800,20 @@
     save();
     // 最後のセットでなければ（または次の種目があれば）レスト開始
     const allDone = S.active.exercises.every(x => x.sets.every(y => y.done));
-    if (e.rest > 0 && !allDone) startRest(e.rest, e.name);
+    if (e.rest > 0 && !allDone) startRest(e.rest, e.name, nextSetText(e, c.si));
+  }
+
+  // 次にやるセット（同じ種目の残り → 後ろの種目 → 前の種目の残り）
+  function nextSetText(e, si) {
+    const exs = S.active.exercises;
+    const ei = exs.indexOf(e);
+    const order = [];
+    exs.forEach((x, i) => x.sets.forEach((s, j) => order.push({ x, s, j, k: i === ei ? (j > si ? 0 : 2) : i > ei ? 1 : 2 })));
+    const hit = order.filter(o => !o.s.done).sort((a, b) => a.k - b.k)[0];
+    if (!hit) return '';
+    const no = hit.s.warmup ? 'アップ' : (hit.x.sets.slice(0, hit.j + 1).filter(s => !s.warmup).length + 'セット目');
+    const val = setText(hit.s, hit.x.timed);
+    return `${hit.x.name} ${no}${val && val !== '—' ? ' ' + val : ''}`;
   }
 
   function restPicker(e) {
@@ -849,7 +872,7 @@
     S.workouts.unshift(rec);
     queueUpsert(rec.id);
     S.workouts.sort((a, b) => b.start - a.start);
-    S.active = null; S.rest = null;
+    S.active = null; S.rest = null; pushRestChange(true);
     saveNow(); ui.tab = 'history'; render(); keepAwake();
     showSummary(rec, w);
   }
@@ -872,19 +895,21 @@
   }
 
   // ---------- レストタイマー ----------
-  function startRest(sec, label) {
-    S.rest = { endAt: Date.now() + sec * 1000, total: sec, label, fired: false };
+  function startRest(sec, label, next) {
+    S.rest = { endAt: Date.now() + sec * 1000, total: sec, label, next: next || '', fired: false };
     save(); tickRest();
+    pushRest(label, next);
   }
   const rb = $('#restbar');
   rb.addEventListener('click', ev => {
     const b = ev.target.closest('[data-r]'); if (!b || !S.rest) return;
     const r = b.dataset.r;
-    if (r === 'skip') S.rest = null;
+    if (r === 'skip') { S.rest = null; pushRestChange(true); }
     else {
       const d = +r * 1000;
       S.rest.endAt = Math.max(Date.now(), S.rest.endAt + d); S.rest.total = Math.max(1, S.rest.total + +r);
       S.rest.fired = false;
+      pushRestChange(false);
     }
     save(); tickRest();
   });
@@ -911,7 +936,7 @@
     if (rbShape !== 'run') {
       rbShape = 'run'; rb.classList.remove('fin');
       rb.innerHTML = `<div class="rb-prog"></div><div class="rb-in">
-        <div class="rb-l"><div class="rb-label">レスト · ${esc(r.label)}</div><div class="rb-time"></div></div>
+        <div class="rb-l"><div class="rb-label">${r.next ? '次: ' + esc(r.next) : 'レスト · ' + esc(r.label)}</div><div class="rb-time"></div></div>
         <button class="rb-btn" data-r="-15">−15</button><button class="rb-btn" data-r="15">＋15</button><button class="rb-btn skip" data-r="skip">スキップ</button></div>`;
     }
     $('.rb-time', rb).textContent = mmss(Math.ceil(left));
@@ -1081,6 +1106,71 @@
     </div>`, [{ label: '閉じる', cls: 'gray', fn: closeSheet }]);
   }
   window.addEventListener('online', flush);
+
+  // ---------- レスト終了の通知 ----------
+  // 端末で暗号化した通知を Apps Script に預け、レスト終了の時刻に送ってもらう。
+  const PUSH_KEY = 'kintore:push';
+  function pushState() { try { return JSON.parse(localStorage.getItem(PUSH_KEY)) || null; } catch (e) { return null; } }
+  function setPushState(v) { try { if (v) localStorage.setItem(PUSH_KEY, JSON.stringify(v)); else localStorage.removeItem(PUSH_KEY); } catch (e) { /* noop */ } }
+  const pushOn = () => { const st = pushState(); return !!(st && st.sub); };
+  const isStandalone = () => navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  let restToken = null;
+
+  async function enablePush() {
+    if (!apiUrl()) { toast('先に「スプレッドシート連携」を設定してください'); return false; }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      toast(isStandalone() ? 'この端末では通知が使えません（iOS 16.4以降が必要）' : 'ホーム画面に追加したキントレから設定してください');
+      return false;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('通知が許可されていません（iPhoneの 設定 → 通知 → キントレ で許可できます）'); return false; }
+    try {
+      const info = await fetch(apiUrl()).then(r => r.json());
+      if (!info || (info.version || 1) < 2) { toast('スプレッドシートのスクリプトを最新版に更新してください'); return false; }
+      const reg = await navigator.serviceWorker.ready;
+      const st = pushState() || {};
+      let sub = await reg.pushManager.getSubscription();
+      if (!st.vapid) { st.vapid = await KintorePush.generateVapid(); if (sub) { await sub.unsubscribe(); sub = null; } }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: KintorePush.unb64u(st.vapid.pub) });
+      st.sub = sub.toJSON();
+      setPushState(st);
+      return true;
+    } catch (e) {
+      toast('通知をオンにできませんでした: ' + (e.message || e));
+      return false;
+    }
+  }
+  async function disablePush() {
+    setPushState(null);
+    try { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) { /* noop */ }
+  }
+  const postApi = body => fetch(apiUrl(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) }).then(r => r.json());
+
+  async function pushRest(label, next) {
+    const st = pushState();
+    if (!st || !st.sub || !apiUrl()) return;
+    const token = uid(); restToken = token;
+    try {
+      const req = await KintorePush.buildRequest(st.sub, st.vapid, { title: 'レスト終了', body: next ? '次: ' + next : label + ' のレストが終わりました', tag: 'rest' });
+      if (restToken !== token || !S.rest) return;
+      postApi(Object.assign({ action: 'rest', token, ms: Math.max(0, S.rest.endAt - Date.now()) }, req)).catch(() => {});
+    } catch (e) { /* 通知が送れなくてもアプリ内のタイマーは動く */ }
+  }
+  function pushRestChange(cancel) {
+    if (!restToken || !apiUrl()) return;
+    const body = { action: cancel || !S.rest ? 'restCancel' : 'restUpdate', token: restToken, ms: S.rest ? Math.max(0, S.rest.endAt - Date.now()) : 0 };
+    if (body.action === 'restCancel') restToken = null;
+    postApi(body).catch(() => {});
+  }
+  async function pushTest() {
+    const st = pushState(); if (!st) return;
+    toast('10秒後に届きます。画面をロックするか、ほかのアプリに切り替えてください');
+    try {
+      const req = await KintorePush.buildRequest(st.sub, st.vapid, { title: 'キントレ', body: 'テスト通知です。届いていれば設定完了です 💪', tag: 'test' });
+      const j = await postApi(Object.assign({ action: 'rest', token: 'test-' + uid(), ms: 10000 }, req));
+      if (!j.ok) toast('送れませんでした: ' + (j.error || '') + (j.status ? '（' + j.status + '）' : ''));
+    } catch (e) { toast('送れませんでした: ' + (e.message || e)); }
+  }
 
   // ---------- 起動 ----------
   if (S.active) ui.woOpen = true;

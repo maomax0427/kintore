@@ -181,7 +181,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .restbar.below-mini { bottom: calc(var(--sb) + 126px); }
 .rb-prog { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-soft); transition: width .25s linear; }
 .rb-in { position: relative; display: flex; align-items: center; gap: 8px; }
-.rb-label { font-size: 12px; color: var(--sub); font-weight: 600; }
+.rb-label { font-size: 12px; color: var(--sub); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rb-time { font-size: 30px; font-weight: 800; letter-spacing: -.01em; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .rb-l { flex: 1; min-width: 0; }
 .rb-btn { height: 38px; min-width: 50px; padding: 0 10px; border-radius: 10px; background: var(--field); font-weight: 700; font-size: 14px; }
