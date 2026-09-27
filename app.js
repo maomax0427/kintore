@@ -812,8 +812,10 @@
     const hit = order.filter(o => !o.s.done).sort((a, b) => a.k - b.k)[0];
     if (!hit) return '';
     const no = hit.s.warmup ? 'アップ' : (hit.x.sets.slice(0, hit.j + 1).filter(s => !s.warmup).length + 'セット目');
-    const val = setText(hit.s, hit.x.timed);
-    return `${hit.x.name} ${no}${val && val !== '—' ? ' ' + val : ''}`;
+    const t = hit.s;
+    const amount = hit.x.timed || (t.sec && !t.reps) ? (t.sec ? restLabel(t.sec) : '') : (t.reps != null ? t.reps + '回' : '');
+    const val = t.kg ? fmtKg(t.kg) + 'kg' + (amount ? ' × ' + amount : '') : amount;
+    return `${hit.x.name} ${no}${val ? ' ' + val : ''}`;
   }
 
   function restPicker(e) {
