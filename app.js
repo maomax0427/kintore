@@ -983,7 +983,7 @@
   // ---------- 画像で保存 ----------
   // ワークアウト1回分を、全セットが入る1枚の画像にする（スクショの代わり）
   function workoutImage(w) {
-    const WIDTH = 1080, PAD = 60, CP = 32;
+    const WIDTH = 1080, PAD = 56, CP = 26;
     const FONT = '-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif';
     const C = { bg: '#F2F2F7', card: '#FFFFFF', text: '#111114', sub: '#8A8A90', accent: '#1E78F0', gold: '#B87D00', chip: '#EFEFF4', badge: '#1E78F0' };
     const cv = document.createElement('canvas');
@@ -1036,13 +1036,13 @@
     let lastSec = '';
     const inner = WIDTH - PAD * 2 - CP * 2;
     w.exercises.forEach(e => {
-      if (e.section && e.section !== lastSec) { lastSec = e.section; T(fit(e.section, 26, 800, WIDTH - PAD * 2), PAD + 8, y + 28, 26, 800, C.sub); y += 44; }
+      if (e.section && e.section !== lastSec) { lastSec = e.section; T(fit(e.section, 24, 800, WIDTH - PAD * 2), PAD + 8, y + 26, 24, 800, C.sub); y += 38; }
       const top = y;
       const cardOps = [];
       let cy = top + CP;
-      cardOps.push([fit(e.name, 38, 800, inner), 38, 800, C.accent, cy + 38]); cy += 52;
-      if (e.note) wrap(e.note, 26, 600, inner).forEach(l => { cardOps.push([l, 26, 600, C.gold, cy + 26]); cy += 36; });
-      cy += 8;
+      cardOps.push([fit(e.name, 34, 800, inner), 34, 800, C.accent, cy + 33]); cy += 44;
+      if (e.note) wrap(e.note, 24, 600, inner).forEach(l => { cardOps.push([l, 24, 600, C.gold, cy + 22]); cy += 32; });
+      cy += 6;
       // 同じ内容が続くセットは「× 3セット」にまとめる
       const groups = [];
       e.sets.forEach(s => {
@@ -1050,27 +1050,27 @@
         const g = groups[groups.length - 1];
         if (g && g.t === t) g.n++; else groups.push({ t, n: 1, warmup: !!s.warmup });
       });
-      let cx = 0; const CH = 62, GAP = 12;
+      let cx = 0; const CH = 54, GAP = 10;
       const chips = [];
       groups.forEach(g => {
         const badge = g.n > 1 ? '× ' + g.n + 'セット' : '';
-        const cw = 24 + measure(g.t, 30, 700) + (badge ? 14 + measure(badge, 24, 800) : 0) + 24;
+        const cw = 20 + measure(g.t, 28, 700) + (badge ? 12 + measure(badge, 22, 800) : 0) + 20;
         if (cx && cx + cw > inner) { cx = 0; cy += CH + GAP; }
         chips.push({ g, badge, x: PAD + CP + cx, y: cy, w: cw });
         cx += cw + GAP;
       });
       cy += CH;
       const h = cy - top + CP;
-      R(PAD, top, WIDTH - PAD * 2, h, 28, C.card);
+      R(PAD, top, WIDTH - PAD * 2, h, 24, C.card);
       cardOps.forEach(([t, size, weight, color, ty]) => T(t, PAD + CP, ty, size, weight, color));
       chips.forEach(c => {
-        R(c.x, c.y, c.w, CH, 16, C.chip);
-        T(c.g.t, c.x + 24, c.y + 42, 30, 700, c.g.warmup ? C.gold : C.text);
-        if (c.badge) T(c.badge, c.x + c.w - 24, c.y + 41, 24, 800, C.badge, 'right');
+        R(c.x, c.y, c.w, CH, 14, C.chip);
+        T(c.g.t, c.x + 20, c.y + 37, 28, 700, c.g.warmup ? C.gold : C.text);
+        if (c.badge) T(c.badge, c.x + c.w - 20, c.y + 36, 22, 800, C.badge, 'right');
       });
-      y = top + h + 18;
+      y = top + h + 12;
     });
-    y += PAD - 18;
+    y += PAD - 12;
 
     cv.width = WIDTH; cv.height = Math.ceil(y);
     ctx.fillStyle = C.bg; ctx.fillRect(0, 0, cv.width, cv.height);
