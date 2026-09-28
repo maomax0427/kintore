@@ -256,3 +256,6 @@ label.lb { display: block; font-size: 13px; font-weight: 700; color: var(--sub);
 .edit-meta label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; font-weight: 700; color: var(--sub); min-width: 0; }
 .edit-meta input { width: 100%; min-width: 0; height: 36px; border: 0; border-radius: 8px; background: var(--field); padding: 0 6px; font-size: 16px; font-weight: 600; color: var(--text); outline: none; -webkit-appearance: none; appearance: none; font-variant-numeric: tabular-nums; }
 .edit-meta input:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* 画像で保存 */
+.shot { display: block; width: 100%; height: auto; border-radius: 14px; box-shadow: var(--shadow), 0 0 0 1px var(--line); }

@@ -333,6 +333,7 @@
       }).join('')}`;
     openSheet(esc(w.title), body + `
       <div class="card" style="margin-top:6px">
+        <button class="set-row link" style="width:100%" data-hd="img">画像で保存（1枚にまとめる）</button>
         <button class="set-row link" style="width:100%" data-hd="tpl">テンプレートとして保存</button>
         <button class="set-row" style="width:100%;color:var(--red)" data-hd="del">この記録を削除</button>
       </div>`, [
@@ -341,7 +342,8 @@
     ]);
     $('#sheet .sh-b').addEventListener('click', ev => {
       const b = ev.target.closest('[data-hd]'); if (!b) return;
-      if (b.dataset.hd === 'tpl') saveTemplate(w.title, w.exercises);
+      if (b.dataset.hd === 'img') showImage(w);
+      else if (b.dataset.hd === 'tpl') saveTemplate(w.title, w.exercises);
       else if (confirm('この記録を削除しますか？')) { S.workouts = S.workouts.filter(x => x.id !== id); queueDelete(id); save(); closeSheet(); render(); }
     });
   }
@@ -978,6 +980,129 @@
     showSummary(rec, w);
   }
 
+  // ---------- 画像で保存 ----------
+  // ワークアウト1回分を、全セットが入る1枚の画像にする（スクショの代わり）
+  function workoutImage(w) {
+    const WIDTH = 1080, PAD = 60, CP = 32;
+    const FONT = '-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif';
+    const C = { bg: '#F2F2F7', card: '#FFFFFF', text: '#111114', sub: '#8A8A90', accent: '#1E78F0', gold: '#B87D00', chip: '#EFEFF4', badge: '#1E78F0' };
+    const cv = document.createElement('canvas');
+    const ctx = cv.getContext('2d');
+    const font = (size, weight) => `${weight || 400} ${size}px ${FONT}`;
+    const measure = (t, size, weight) => { ctx.font = font(size, weight); return ctx.measureText(t).width; };
+    const fit = (t, size, weight, max) => {
+      if (measure(t, size, weight) <= max) return t;
+      while (t.length > 1 && measure(t + '…', size, weight) > max) t = t.slice(0, -1);
+      return t + '…';
+    };
+    const wrap = (t, size, weight, max) => {
+      const lines = []; let line = '';
+      for (const ch of t) { if (line && measure(line + ch, size, weight) > max) { lines.push(line); line = ''; } line += ch; }
+      if (line) lines.push(line);
+      return lines;
+    };
+    const chipText = s => {
+      if (s.sec && !s.reps) return (s.kg ? fmtKg(s.kg) + 'kg × ' : '') + restLabel(s.sec);
+      if (s.kg) return fmtKg(s.kg) + 'kg × ' + (s.reps == null ? '-' : s.reps);
+      if (s.kg === 0) return '自重 × ' + (s.reps == null ? '-' : s.reps);
+      return (s.reps == null ? '-' : s.reps) + '回';
+    };
+    const ops = [];
+    const T = (t, x, y, size, weight, color, align) => ops.push(() => { ctx.font = font(size, weight); ctx.fillStyle = color; ctx.textAlign = align || 'left'; ctx.fillText(t, x, y); });
+    const R = (x, y, w2, h, r, color) => ops.push(() => {
+      ctx.fillStyle = color; ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x, y, w2, h, r); else ctx.rect(x, y, w2, h);
+      ctx.fill();
+    });
+
+    let y = PAD;
+    T('キントレ', PAD, y + 28, 28, 800, C.accent); y += 48;
+    T(fit(w.title, 54, 800, WIDTH - PAD * 2), PAD, y + 54, 54, 800, C.text); y += 74;
+    T(dateLabel(w.start, true) + ' 開始', PAD, y + 30, 30, 500, C.sub); y += 58;
+
+    const nSets = w.exercises.reduce((a, e) => a + e.sets.filter(s => !s.warmup).length, 0);
+    const stats = [[dur(w.end - w.start), '時間'], [fmtVol(volOf(w)), '総重量'], [String(nSets), 'セット']];
+    const bw = (WIDTH - PAD * 2 - 32) / 3;
+    stats.forEach(([v, l], i) => {
+      const x = PAD + i * (bw + 16);
+      R(x, y, bw, 124, 24, C.card);
+      T(fit(v, 44, 800, bw - 24), x + bw / 2, y + 64, 44, 800, C.text, 'center');
+      T(l, x + bw / 2, y + 102, 24, 600, C.sub, 'center');
+    });
+    y += 150;
+    (w.prs || []).forEach(p => { T(fit('🏆 ' + p, 30, 700, WIDTH - PAD * 2), PAD, y + 32, 30, 700, C.gold); y += 46; });
+    if ((w.prs || []).length) y += 12;
+
+    let lastSec = '';
+    const inner = WIDTH - PAD * 2 - CP * 2;
+    w.exercises.forEach(e => {
+      if (e.section && e.section !== lastSec) { lastSec = e.section; T(fit(e.section, 26, 800, WIDTH - PAD * 2), PAD + 8, y + 28, 26, 800, C.sub); y += 44; }
+      const top = y;
+      const cardOps = [];
+      let cy = top + CP;
+      cardOps.push([fit(e.name, 38, 800, inner), 38, 800, C.accent, cy + 38]); cy += 52;
+      if (e.note) wrap(e.note, 26, 600, inner).forEach(l => { cardOps.push([l, 26, 600, C.gold, cy + 26]); cy += 36; });
+      cy += 8;
+      // 同じ内容が続くセットは「× 3セット」にまとめる
+      const groups = [];
+      e.sets.forEach(s => {
+        const t = (s.warmup ? 'W ' : '') + chipText(s);
+        const g = groups[groups.length - 1];
+        if (g && g.t === t) g.n++; else groups.push({ t, n: 1, warmup: !!s.warmup });
+      });
+      let cx = 0; const CH = 62, GAP = 12;
+      const chips = [];
+      groups.forEach(g => {
+        const badge = g.n > 1 ? '× ' + g.n + 'セット' : '';
+        const cw = 24 + measure(g.t, 30, 700) + (badge ? 14 + measure(badge, 24, 800) : 0) + 24;
+        if (cx && cx + cw > inner) { cx = 0; cy += CH + GAP; }
+        chips.push({ g, badge, x: PAD + CP + cx, y: cy, w: cw });
+        cx += cw + GAP;
+      });
+      cy += CH;
+      const h = cy - top + CP;
+      R(PAD, top, WIDTH - PAD * 2, h, 28, C.card);
+      cardOps.forEach(([t, size, weight, color, ty]) => T(t, PAD + CP, ty, size, weight, color));
+      chips.forEach(c => {
+        R(c.x, c.y, c.w, CH, 16, C.chip);
+        T(c.g.t, c.x + 24, c.y + 42, 30, 700, c.g.warmup ? C.gold : C.text);
+        if (c.badge) T(c.badge, c.x + c.w - 24, c.y + 41, 24, 800, C.badge, 'right');
+      });
+      y = top + h + 18;
+    });
+    y += PAD - 18;
+
+    cv.width = WIDTH; cv.height = Math.ceil(y);
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.textBaseline = 'alphabetic';
+    ops.forEach(fn => fn());
+    return cv;
+  }
+
+  async function showImage(w) {
+    let blob;
+    try {
+      const cv = workoutImage(w);
+      blob = await new Promise((res, rej) => cv.toBlob(b => (b ? res(b) : rej(new Error('画像を作れませんでした'))), 'image/png'));
+    } catch (e) { return toast(e.message || '画像を作れませんでした'); }
+    const url = URL.createObjectURL(blob);
+    const d = new Date(w.start);
+    const name = `kintore-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}.png`;
+    openSheet('画像で保存', `<img src="${url}" class="shot" alt="${esc(w.title)}の記録">
+      <div class="small muted" style="text-align:center;margin-top:10px">「保存・共有」→「画像を保存」で写真に保存できます。画像を長押ししても保存できます。</div>`, [
+      { label: '閉じる', cls: 'gray', fn: () => { closeSheet(); URL.revokeObjectURL(url); } },
+      { label: '保存・共有', cls: 'primary', fn: async () => {
+        const file = new File([blob], name, { type: 'image/png' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          try { await navigator.share({ files: [file] }); } catch (e) { /* キャンセル */ }
+        } else {
+          const a = document.createElement('a'); a.href = url; a.download = name;
+          document.body.appendChild(a); a.click(); a.remove();
+        }
+      } },
+    ]);
+  }
+
   function showSummary(rec, src) {
     const n = S.workouts.length;
     const body = `
@@ -990,7 +1115,8 @@
       ${rec.prs.length ? `<div class="card det-ex">${rec.prs.map(p => `<div class="pr">🏆 ${esc(p)}</div>`).join('')}</div>` : ''}
       <div class="card det-ex">${rec.exercises.map(e => { const b = bestSet(e.sets); return `<div class="det-set" style="grid-template-columns:1fr auto"><span>${e.sets.filter(s => !s.warmup).length} × ${esc(e.name)}</span><span class="num muted">${b ? esc(setText(b, e.timed)) : ''}</span></div>`; }).join('')}</div>`;
     openSheet('記録しました', body, [
-      { label: 'テンプレに保存', cls: 'soft', fn: () => saveTemplate(rec.title, src.exercises) },
+      { label: 'テンプレ保存', cls: 'soft', fn: () => saveTemplate(rec.title, src.exercises) },
+      { label: '画像で保存', cls: 'soft', fn: () => showImage(rec) },
       { label: '閉じる', cls: 'primary', fn: closeSheet },
     ]);
   }
