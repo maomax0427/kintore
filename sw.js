@@ -1,5 +1,5 @@
 // アプリ本体をキャッシュして、ジムで電波が弱くても起動できるようにする。
-const CACHE = 'kintore-v4';
+const CACHE = 'kintore-v5';
 const SHELL = ['./', 'index.html', 'style.css', 'parser.js', 'presets.js', 'push.js', 'app.js', 'manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

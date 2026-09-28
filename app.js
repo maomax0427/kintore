@@ -35,7 +35,8 @@
   window.addEventListener('pagehide', saveNow);
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); else { tickRest(); keepAwake(); } });
 
-  const ui = { tab: 'workout', woOpen: true, exFilter: 'すべて', exQuery: '' };
+  const ui = { tab: 'workout', woOpen: true, exFilter: 'すべて', exQuery: '', edit: null };
+  const W = () => (ui.edit ? ui.edit.w : S.active);
 
   // ---------- 小物 ----------
   function toast(msg) {
@@ -126,16 +127,17 @@
     S.custom.push({ id: 'c:' + uid(), name: ex.name, part: ex.part || 'その他', compound: !!ex.compound, timed: !!ex.timed, aliases: [] });
   }
   // その種目を前回やったときのセット
-  function prevSets(name, excludeId) {
+  function prevSets(name, excludeId, before) {
     for (const w of S.workouts) {
-      if (w.id === excludeId) continue;
+      if (w.id === excludeId || (before && w.start >= before)) continue;
       const e = w.exercises.find(x => x.name === name);
       if (e && e.sets.length) return e.sets;
     }
     return null;
   }
   function prevFor(ex, si) {
-    const ps = prevSets(ex.name); if (!ps) return null;
+    const cw = W();
+    const ps = prevSets(ex.name, cw && cw.id, ui.edit ? cw.start : null); if (!ps) return null;
     const s = ex.sets[si];
     const idx = ex.sets.slice(0, si).filter(x => !!x.warmup === !!s.warmup).length;
     const same = ps.filter(x => !!x.warmup === !!s.warmup);
@@ -329,11 +331,19 @@
         return `<div class="card det-ex"><b>${esc(e.name)}</b>${e.note ? `<div class="ex-note" style="padding:0">${esc(e.note)}</div>` : ''}${e.sets.map(s => `
           <div class="det-set"><span class="n">${s.warmup ? 'W' : ++n}</span><span class="num">${esc(setText(s, e.timed))}</span><span class="e num">${e1rm(s.kg, s.reps) ? '1RM ' + Math.round(e1rm(s.kg, s.reps)) : ''}</span></div>`).join('')}</div>`;
       }).join('')}`;
-    openSheet(esc(w.title), body, [
-      { label: '削除', cls: 'danger', fn: () => { if (confirm('この記録を削除しますか？')) { S.workouts = S.workouts.filter(x => x.id !== id); queueDelete(id); save(); closeSheet(); render(); } } },
-      { label: 'テンプレに保存', cls: 'soft', fn: () => saveTemplate(w.title, w.exercises) },
+    openSheet(esc(w.title), body + `
+      <div class="card" style="margin-top:6px">
+        <button class="set-row link" style="width:100%" data-hd="tpl">テンプレートとして保存</button>
+        <button class="set-row" style="width:100%;color:var(--red)" data-hd="del">この記録を削除</button>
+      </div>`, [
+      { label: '編集', cls: 'soft', fn: () => startEdit(id) },
       { label: 'もう一度', cls: 'primary', fn: () => { closeSheet(); startWorkout({ title: w.title, exercises: toWorkoutExercises(w.exercises) }); } },
     ]);
+    $('#sheet .sh-b').addEventListener('click', ev => {
+      const b = ev.target.closest('[data-hd]'); if (!b) return;
+      if (b.dataset.hd === 'tpl') saveTemplate(w.title, w.exercises);
+      else if (confirm('この記録を削除しますか？')) { S.workouts = S.workouts.filter(x => x.id !== id); queueDelete(id); save(); closeSheet(); render(); }
+    });
   }
 
   // ----- 種目 -----
@@ -591,8 +601,8 @@
         closeSheet();
         startWorkout({ title: r.title || defaultTitle(), exercises: toWorkoutExercises(r.exercises) });
       } else if (kind === 'append') {
-        if (r.title && !S.active.exercises.length) S.active.title = r.title;
-        S.active.exercises.push(...toWorkoutExercises(r.exercises));
+        if (r.title && !W().exercises.length) W().title = r.title;
+        W().exercises.push(...toWorkoutExercises(r.exercises));
         save(); closeSheet(); renderWorkout(true);
         toast(r.exercises.length + '種目を追加しました');
       } else if (kind === 'template') {
@@ -645,7 +655,7 @@
 
   function renderMini() {
     const m = $('#mini');
-    if (S.active && !ui.woOpen) {
+    if (S.active && !ui.woOpen && !ui.edit) {
       m.hidden = false;
       m.innerHTML = `<span>▲</span><span class="t">${esc(S.active.title)}</span><span class="num" id="miniTime">${mmss((Date.now() - S.active.start) / 1000)}</span>`;
     } else m.hidden = true;
@@ -654,10 +664,11 @@
 
   function renderWorkout(keepScroll) {
     const wo = $('#wo');
-    const w = S.active;
-    if (!w || !ui.woOpen) { wo.hidden = true; document.body.style.overflow = ''; return; }
+    const w = W();
+    if (!w || (!ui.edit && !ui.woOpen)) { wo.hidden = true; document.body.style.overflow = ''; return; }
     const prevScroll = $('.wo-body') ? $('.wo-body').scrollTop : 0;
     wo.hidden = false; document.body.style.overflow = 'hidden';
+    if (ui.edit) { wo.innerHTML = editHtml(w); if (keepScroll) $('.wo-body').scrollTop = prevScroll; return; }
     wo.innerHTML = `
       <div class="wo-h">
         <button class="icon" data-w="min" aria-label="しまう">${ICONS.down}</button>
@@ -667,8 +678,7 @@
       <div class="wo-body"><div class="wo-inner">
         <input class="wo-title" id="woTitle" value="${esc(w.title)}" aria-label="タイトル">
         <div class="wo-meta">${dateLabel(w.start, true)} 開始</div>
-        ${w.exercises.map((e, ei) => (e.section && (ei === 0 || w.exercises[ei - 1].section !== e.section) ? `<div class="sec-label">${esc(e.section)}</div>` : '') + exCard(e, ei)).join('')}
-        ${!w.exercises.length ? '<div class="card empty">種目を追加してください</div>' : ''}
+        ${exList(w)}
         <div class="wo-actions">
           <button class="btn soft block" data-w="add-text">＋ テキストで種目を追加</button>
           <button class="btn soft block" data-w="add-ex">＋ 一覧から種目を追加</button>
@@ -677,6 +687,78 @@
       </div></div>`;
     if (keepScroll) $('.wo-body').scrollTop = prevScroll;
   }
+  function exList(w) {
+    return w.exercises.map((e, ei) => (e.section && (ei === 0 || w.exercises[ei - 1].section !== e.section) ? `<div class="sec-label">${esc(e.section)}</div>` : '') + exCard(e, ei)).join('')
+      + (!w.exercises.length ? '<div class="card empty">種目を追加してください</div>' : '');
+  }
+  // 終わったワークアウトの編集画面
+  function editHtml(w) {
+    const ed = ui.edit;
+    return `
+      <div class="wo-h">
+        <button class="btn gray sm" data-w="edit-cancel">キャンセル</button>
+        <div class="mid">記録を編集</div>
+        <button class="btn primary sm" data-w="edit-save">保存</button>
+      </div>
+      <div class="wo-body"><div class="wo-inner">
+        <input class="wo-title" id="woTitle" value="${esc(w.title)}" aria-label="タイトル">
+        <div class="edit-meta card">
+          <label><span>日付</span><input type="date" id="edDate" value="${ed.date}"></label>
+          <label><span>開始</span><input type="time" id="edTime" value="${ed.time}"></label>
+          <label><span>時間（分）</span><input type="number" inputmode="numeric" min="1" id="edMin" value="${ed.min}"></label>
+        </div>
+        <div class="small muted" style="padding:0 4px 10px">✓ がついているセットが記録されます。セット番号をタップすると削除やウォームアップ切り替え、種目名をタップすると並べ替えや削除ができます。</div>
+        ${exList(w)}
+        <div class="wo-actions">
+          <button class="btn soft block" data-w="add-text">＋ テキストで種目を追加</button>
+          <button class="btn soft block" data-w="add-ex">＋ 一覧から種目を追加</button>
+          <button class="btn danger block" data-w="edit-delete">この記録を削除</button>
+        </div>
+      </div></div>`;
+  }
+  const pad2 = n => String(n).padStart(2, '0');
+  function startEdit(id) {
+    const w = S.workouts.find(x => x.id === id); if (!w) return;
+    const d = new Date(w.start);
+    ui.edit = {
+      date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+      time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
+      min: Math.max(1, Math.round((w.end - w.start) / 60000)),
+      w: {
+        id: w.id, title: w.title, start: w.start,
+        exercises: w.exercises.map(e => ({
+          id: uid(), name: e.name, part: e.part, timed: !!e.timed, rest: e.rest, note: e.note || '', section: e.section || '',
+          sets: e.sets.map(s => ({ id: uid(), kg: s.kg, reps: s.reps, sec: s.sec, warmup: !!s.warmup, done: true })),
+        })),
+      },
+    };
+    closeSheet(); render();
+    const body = $('.wo-body'); if (body) body.scrollTop = 0;
+  }
+  function saveEdit() {
+    const ed = ui.edit, w = ed.w;
+    const start = new Date(`${ed.date}T${ed.time || '00:00'}`).getTime();
+    const min = Number(ed.min);
+    if (!ed.date || isNaN(start)) return toast('日付と開始時刻を入れてください');
+    if (!(min > 0)) return toast('時間（分）を入れてください');
+    const undone = w.exercises.reduce((a, e) => a + e.sets.filter(s => !s.done && (s.reps != null || s.sec != null)).length, 0);
+    if (!w.exercises.some(e => e.sets.some(s => s.done))) return toast('✓ のついたセットがありません。記録ごと消す場合は「この記録を削除」を押してください');
+    if (undone && !confirm(`✓ のないセットが${undone}個あります。✓ のついたセットだけ保存しますか？`)) return;
+    const rec = buildRecord(w, start, start + Math.round(min) * 60000);
+    rec.exercises.forEach(e => { if (!P.findExercise(e.name, S.custom)) registerCustom(Object.assign({}, e, exMeta(e.name))); });
+    S.workouts = S.workouts.filter(x => x.id !== rec.id).concat(rec).sort((a, b) => b.start - a.start);
+    queueUpsert(rec.id);
+    ui.edit = null;
+    saveNow(); ui.tab = 'history'; render();
+    toast('保存しました');
+    openHistoryDetail(rec.id);
+  }
+  function endEdit(reopen) {
+    const id = ui.edit && ui.edit.w.id;
+    ui.edit = null; render();
+    if (reopen && id) openHistoryDetail(id);
+  }
+
   function exCard(e, ei) {
     let n = 0;
     const repLabel = e.timed ? '秒' : '回';
@@ -709,12 +791,15 @@
   const woEl = $('#wo');
   const cur = el => {
     const card = el.closest('[data-ei]'); const row = el.closest('[data-si]');
-    const e = card ? S.active.exercises[+card.dataset.ei] : null;
+    const e = card ? W().exercises[+card.dataset.ei] : null;
     return { card, row, e, ei: card ? +card.dataset.ei : -1, si: row ? +row.dataset.si : -1, s: e && row ? e.sets[+row.dataset.si] : null };
   };
   woEl.addEventListener('input', ev => {
     const t = ev.target;
-    if (t.id === 'woTitle') { S.active.title = t.value; save(); return; }
+    if (t.id === 'woTitle') { W().title = t.value; save(); return; }
+    if (ui.edit && t.id === 'edDate') { ui.edit.date = t.value; return; }
+    if (ui.edit && t.id === 'edTime') { ui.edit.time = t.value; return; }
+    if (ui.edit && t.id === 'edMin') { ui.edit.min = t.value; return; }
     if (!t.dataset.f) return;
     const { s } = cur(t); if (!s) return;
     s[t.dataset.f] = num(t.value.replace(',', '.'));
@@ -729,9 +814,14 @@
   });
   woEl.addEventListener('click', ev => {
     const b = ev.target.closest('[data-w]'); if (!b) return;
-    const w = S.active; const act = b.dataset.w;
+    const w = W(); const act = b.dataset.w;
     const c = cur(b);
     if (act === 'min') { ui.woOpen = false; render(); }
+    else if (act === 'edit-save') saveEdit();
+    else if (act === 'edit-cancel') { if (confirm('編集した内容を破棄しますか？')) endEdit(true); }
+    else if (act === 'edit-delete') {
+      if (confirm('この記録を削除しますか？')) { const id = w.id; S.workouts = S.workouts.filter(x => x.id !== id); queueDelete(id); ui.edit = null; save(); render(); toast('削除しました'); }
+    }
     else if (act === 'finish') finishWorkout();
     else if (act === 'cancel') {
       if (confirm('このワークアウトを中止しますか？記録は残りません。')) { S.active = null; S.rest = null; pushRestChange(true); save(); render(); keepAwake(); }
@@ -757,7 +847,7 @@
     }
     else if (act === 'addset') {
       const last = c.e.sets[c.e.sets.length - 1];
-      c.e.sets.push({ id: uid(), kg: last ? last.kg : null, reps: last ? last.reps : null, sec: last ? last.sec : null, warmup: false, done: false });
+      c.e.sets.push({ id: uid(), kg: last ? last.kg : null, reps: last ? last.reps : null, sec: last ? last.sec : null, warmup: false, done: !!ui.edit && !!last && (last.reps != null || last.sec != null) });
       save(); renderWorkout(true);
     }
     else if (act === 'setmenu') {
@@ -798,7 +888,8 @@
     row.classList.add('done');
     if (navigator.vibrate && S.settings.vibrate) navigator.vibrate(20);
     save();
-    // 最後のセットでなければ（または次の種目があれば）レスト開始
+    // 最後のセットでなければ（または次の種目があれば）レスト開始。編集中はタイマーを動かさない
+    if (ui.edit) return;
     const allDone = S.active.exercises.every(x => x.sets.every(y => y.done));
     if (e.rest > 0 && !allDone) startRest(e.rest, e.name, nextSetText(e, c.si));
   }
@@ -843,33 +934,41 @@
     draw();
   }
 
-  function finishWorkout() {
-    const w = S.active;
-    const done = w.exercises.reduce((a, e) => a + e.sets.filter(s => s.done).length, 0);
-    const undone = w.exercises.reduce((a, e) => a + e.sets.filter(s => !s.done).length, 0);
-    if (!done) { toast('完了したセットがありません。✓ を押して記録してください'); return; }
-    if (undone && !confirm(`未完了のセットが${undone}個あります。完了したセットだけ記録して終えますか？`)) return;
+  function buildRecord(w, start, end) {
     const rec = {
-      id: w.id, title: (w.title || '').trim() || defaultTitle(), start: w.start, end: Date.now(),
+      id: w.id, title: (w.title || '').trim() || defaultTitle(), start, end,
       exercises: w.exercises.map(e => ({
         name: e.name, part: e.part, timed: !!e.timed, rest: e.rest, note: e.note || '', section: e.section || '',
         sets: e.sets.filter(s => s.done).map(s => ({ kg: s.kg, reps: s.reps, sec: s.sec, warmup: !!s.warmup })),
       })).filter(e => e.sets.length),
     };
-    // 自己ベスト（推定1RM・最大重量）を判定
+    // 自己ベスト（推定1RM・最大重量）: それより前の記録と比べる
     rec.prs = [];
     rec.exercises.forEach(e => {
       let pb1 = 0, pbKg = 0, seen = false;
-      S.workouts.forEach(x => x.exercises.forEach(y => {
-        if (y.name !== e.name) return; seen = true;
-        y.sets.forEach(s => { if (!s.warmup) { pb1 = Math.max(pb1, e1rm(s.kg, s.reps)); pbKg = Math.max(pbKg, s.kg || 0); } });
-      }));
+      S.workouts.forEach(x => {
+        if (x.id === rec.id || x.start >= rec.start) return;
+        x.exercises.forEach(y => {
+          if (y.name !== e.name) return; seen = true;
+          y.sets.forEach(s => { if (!s.warmup) { pb1 = Math.max(pb1, e1rm(s.kg, s.reps)); pbKg = Math.max(pbKg, s.kg || 0); } });
+        });
+      });
       if (!seen) return;
       let b1 = 0, bKg = 0;
       e.sets.forEach(s => { if (!s.warmup) { b1 = Math.max(b1, e1rm(s.kg, s.reps)); bKg = Math.max(bKg, s.kg || 0); } });
       if (bKg > pbKg) rec.prs.push(`${e.name} 最大重量 ${fmtKg(bKg)}kg`);
       else if (b1 > pb1 + 0.01) rec.prs.push(`${e.name} 推定1RM ${Math.round(b1)}kg`);
     });
+    return rec;
+  }
+
+  function finishWorkout() {
+    const w = S.active;
+    const done = w.exercises.reduce((a, e) => a + e.sets.filter(s => s.done).length, 0);
+    const undone = w.exercises.reduce((a, e) => a + e.sets.filter(s => !s.done).length, 0);
+    if (!done) { toast('完了したセットがありません。✓ を押して記録してください'); return; }
+    if (undone && !confirm(`未完了のセットが${undone}個あります。完了したセットだけ記録して終えますか？`)) return;
+    const rec = buildRecord(w, w.start, Date.now());
     rec.exercises.forEach(e => { if (!P.findExercise(e.name, S.custom)) registerCustom(Object.assign({}, e, exMeta(e.name))); });
     S.workouts.unshift(rec);
     queueUpsert(rec.id);
@@ -922,7 +1021,7 @@
       const el = $('#woTime'); if (el) el.textContent = mmss((Date.now() - S.active.start) / 1000);
       const m = $('#miniTime'); if (m) m.textContent = mmss((Date.now() - S.active.start) / 1000);
     }
-    if (!r || !S.active) { rb.hidden = true; rbShape = ''; return; }
+    if (!r || !S.active || ui.edit) { rb.hidden = true; rbShape = ''; return; }
     const left = (r.endAt - Date.now()) / 1000;
     rb.hidden = false;
     rb.classList.toggle('below-mini', !ui.woOpen);

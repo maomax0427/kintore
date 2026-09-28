@@ -250,3 +250,9 @@ label.lb { display: block; font-size: 13px; font-weight: 700; color: var(--sub);
 .sec-label { font-size: 12.5px; font-weight: 800; color: var(--sub); margin: 18px 6px 6px; letter-spacing: .02em; }
 .sec-label:first-child { margin-top: 4px; }
 .ex-note { font-size: 12.5px; color: var(--gold); font-weight: 600; padding: 0 4px 8px; margin-top: -4px; line-height: 1.4; }
+
+/* 記録の編集 */
+.edit-meta { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; padding: 10px; margin: 4px 0 8px; }
+.edit-meta label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; font-weight: 700; color: var(--sub); min-width: 0; }
+.edit-meta input { width: 100%; min-width: 0; height: 36px; border: 0; border-radius: 8px; background: var(--field); padding: 0 8px; font-size: 16px; font-weight: 600; color: var(--text); outline: none; -webkit-appearance: none; appearance: none; }
+.edit-meta input:focus { box-shadow: inset 0 0 0 2px var(--accent); }
