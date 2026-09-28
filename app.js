@@ -705,7 +705,7 @@
         <div class="edit-meta card">
           <label><span>日付</span><input type="date" id="edDate" value="${ed.date}"></label>
           <label><span>開始</span><input type="time" id="edTime" value="${ed.time}"></label>
-          <label><span>時間（分）</span><input type="number" inputmode="numeric" min="1" id="edMin" value="${ed.min}"></label>
+          <label><span>時間(分)</span><input type="number" inputmode="numeric" min="1" id="edMin" value="${ed.min}"></label>
         </div>
         <div class="small muted" style="padding:0 4px 10px">✓ がついているセットが記録されます。セット番号をタップすると削除やウォームアップ切り替え、種目名をタップすると並べ替えや削除ができます。</div>
         ${exList(w)}
